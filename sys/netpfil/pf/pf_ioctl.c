@@ -107,7 +107,6 @@ static void		 pf_empty_kpool(struct pf_kpalist *);
 static int		 pfioctl(struct cdev *, u_long, caddr_t, int,
 			    struct thread *);
 static int		 pf_begin_eth(uint32_t *, const char *);
-static void		 pf_rollback_eth_cb(struct epoch_context *);
 static int		 pf_rollback_eth(uint32_t, const char *);
 static int		 pf_commit_eth(uint32_t, const char *);
 static void		 pf_free_eth_rule(struct pf_keth_rule *);
@@ -353,7 +352,8 @@ pfattach_vnet(void)
 	}
 	V_pf_default_rule.states_cur = counter_u64_alloc(M_WAITOK);
 	V_pf_default_rule.states_tot = counter_u64_alloc(M_WAITOK);
-	V_pf_default_rule.src_nodes = counter_u64_alloc(M_WAITOK);
+	for (pf_sn_types_t sn_type = 0; sn_type<PF_SN_MAX; sn_type++)
+		V_pf_default_rule.src_nodes[sn_type] = counter_u64_alloc(M_WAITOK);
 
 	V_pf_default_rule.timestamp = uma_zalloc_pcpu(pf_timestamp_pcpu_zone,
 	    M_WAITOK | M_ZERO);
@@ -794,23 +794,6 @@ pf_begin_eth(uint32_t *ticket, const char *anchor)
 	return (0);
 }
 
-static void
-pf_rollback_eth_cb(struct epoch_context *ctx)
-{
-	struct pf_keth_ruleset *rs;
-
-	rs = __containerof(ctx, struct pf_keth_ruleset, epoch_ctx);
-
-	CURVNET_SET(rs->vnet);
-
-	PF_RULES_WLOCK();
-	pf_rollback_eth(rs->inactive.ticket,
-	    rs->anchor ? rs->anchor->path : "");
-	PF_RULES_WUNLOCK();
-
-	CURVNET_RESTORE();
-}
-
 static int
 pf_rollback_eth(uint32_t ticket, const char *anchor)
 {
@@ -904,15 +887,12 @@ pf_commit_eth(uint32_t ticket, const char *anchor)
 	pf_eth_calc_skip_steps(rs->inactive.rules);
 
 	rules = rs->active.rules;
-	ck_pr_store_ptr(&rs->active.rules, rs->inactive.rules);
+	atomic_store_ptr(&rs->active.rules, rs->inactive.rules);
 	rs->inactive.rules = rules;
 	rs->inactive.ticket = rs->active.ticket;
 
-	/* Clean up inactive rules (i.e. previously active rules), only when
-	 * we're sure they're no longer used. */
-	NET_EPOCH_CALL(pf_rollback_eth_cb, &rs->epoch_ctx);
-
-	return (0);
+	return (pf_rollback_eth(rs->inactive.ticket,
+	    rs->anchor ? rs->anchor->path : ""));
 }
 
 #ifdef ALTQ
@@ -1337,6 +1317,7 @@ pf_hash_rule_rolling(MD5_CTX *ctx, struct pf_krule *rule)
 	PF_MD5_UPD(rule, af);
 	PF_MD5_UPD(rule, quick);
 	PF_MD5_UPD(rule, ifnot);
+	PF_MD5_UPD(rule, rcvifnot);
 	PF_MD5_UPD(rule, match_tag_not);
 	PF_MD5_UPD(rule, natpass);
 	PF_MD5_UPD(rule, keep_state);
@@ -1874,7 +1855,8 @@ pf_krule_free(struct pf_krule *rule)
 	}
 	counter_u64_free(rule->states_cur);
 	counter_u64_free(rule->states_tot);
-	counter_u64_free(rule->src_nodes);
+	for (pf_sn_types_t sn_type=0; sn_type<PF_SN_MAX; sn_type++)
+		counter_u64_free(rule->src_nodes[sn_type]);
 	uma_zfree_pcpu(pf_timestamp_pcpu_zone, rule->timestamp);
 
 	mtx_destroy(&rule->nat.mtx);
@@ -2110,7 +2092,8 @@ pf_ioctl_addrule(struct pf_krule *rule, uint32_t ticket,
 	}
 	rule->states_cur = counter_u64_alloc(M_WAITOK);
 	rule->states_tot = counter_u64_alloc(M_WAITOK);
-	rule->src_nodes = counter_u64_alloc(M_WAITOK);
+	for (pf_sn_types_t sn_type=0; sn_type<PF_SN_MAX; sn_type++)
+		rule->src_nodes[sn_type] = counter_u64_alloc(M_WAITOK);
 	rule->cuid = uid;
 	rule->cpid = pid;
 	TAILQ_INIT(&rule->rdr.list);
@@ -3671,7 +3654,8 @@ DIOCGETRULENV_error:
 			}
 			newrule->states_cur = counter_u64_alloc(M_WAITOK);
 			newrule->states_tot = counter_u64_alloc(M_WAITOK);
-			newrule->src_nodes = counter_u64_alloc(M_WAITOK);
+			for (pf_sn_types_t sn_type=0; sn_type<PF_SN_MAX; sn_type++)
+				newrule->src_nodes[sn_type] = counter_u64_alloc(M_WAITOK);
 			newrule->cuid = td->td_ucred->cr_ruid;
 			newrule->cpid = td->td_proc ? td->td_proc->p_pid : 0;
 			TAILQ_INIT(&newrule->nat.list);
@@ -5179,8 +5163,6 @@ DIOCCHANGEADDR_error:
 			free(ioes, M_TEMP);
 			break;
 		}
-		/* Ensure there's no more ethernet rules to clean up. */
-		NET_EPOCH_DRAIN_CALLBACKS();
 		PF_RULES_WLOCK();
 		for (i = 0, ioe = ioes; i < io->size; i++, ioe++) {
 			ioe->anchor[sizeof(ioe->anchor) - 1] = '\0';
@@ -5694,9 +5676,14 @@ pfsync_state_export(union pfsync_state_union *sp, struct pf_kstate *st, int msg_
 			    __func__, msg_version);
 	}
 
-	if (st->src_node)
+	/*
+	 * XXX Why do we bother pfsyncing source node information if source
+	 * nodes are not synced? Showing users that there is source tracking
+	 * when there is none seems useless.
+	 */
+	if (st->sns[PF_SN_LIMIT] != NULL)
 		sp->pfs_1301.sync_flags |= PFSYNC_FLAG_SRCNODE;
-	if (st->nat_src_node)
+	if (st->sns[PF_SN_NAT] != NULL || st->sns[PF_SN_ROUTE])
 		sp->pfs_1301.sync_flags |= PFSYNC_FLAG_NATSRCNODE;
 
 	sp->pfs_1301.id = st->id;
@@ -5760,11 +5747,10 @@ pf_state_export(struct pf_state_export *sp, struct pf_kstate *st)
 	/* 8 bits for the old libpfctl, 16 bits for the new libpfctl */
 	sp->state_flags_compat = st->state_flags;
 	sp->state_flags = htons(st->state_flags);
-	if (st->src_node)
+	if (st->sns[PF_SN_LIMIT] != NULL)
 		sp->sync_flags |= PFSYNC_FLAG_SRCNODE;
-	if (st->nat_src_node)
+	if (st->sns[PF_SN_NAT] != NULL || st->sns[PF_SN_ROUTE] != NULL)
 		sp->sync_flags |= PFSYNC_FLAG_NATSRCNODE;
-
 	sp->id = st->id;
 	sp->creatorid = st->creatorid;
 	pf_state_peer_hton(&st->src, &sp->src);
@@ -6029,10 +6015,13 @@ pf_kill_srcnodes(struct pfioc_src_node_kill *psnk)
 
 		PF_HASHROW_LOCK(ih);
 		LIST_FOREACH(s, &ih->states, entry) {
-			if (s->src_node && s->src_node->expire == 1)
-				s->src_node = NULL;
-			if (s->nat_src_node && s->nat_src_node->expire == 1)
-				s->nat_src_node = NULL;
+			for(pf_sn_types_t sn_type=0; sn_type<PF_SN_MAX;
+			    sn_type++) {
+				if (s->sns[sn_type] &&
+				    s->sns[sn_type]->expire == 1) {
+					s->sns[sn_type] = NULL;
+				}
+			}
 		}
 		PF_HASHROW_UNLOCK(ih);
 	}
@@ -6805,9 +6794,6 @@ pf_unload_vnet(void)
 	shutdown_pf();
 	PF_RULES_WUNLOCK();
 
-	/* Make sure we've cleaned up ethernet rules before we continue. */
-	NET_EPOCH_DRAIN_CALLBACKS();
-
 	ret = swi_remove(V_pf_swi_cookie);
 	MPASS(ret == 0);
 	ret = intr_event_destroy(V_pf_swi_ie);
@@ -6859,7 +6845,8 @@ pf_unload_vnet(void)
 	}
 	counter_u64_free(V_pf_default_rule.states_cur);
 	counter_u64_free(V_pf_default_rule.states_tot);
-	counter_u64_free(V_pf_default_rule.src_nodes);
+	for (pf_sn_types_t sn_type=0; sn_type<PF_SN_MAX; sn_type++)
+		counter_u64_free(V_pf_default_rule.src_nodes[sn_type]);
 	uma_zfree_pcpu(pf_timestamp_pcpu_zone, V_pf_default_rule.timestamp);
 
 	for (int i = 0; i < PFRES_MAX; i++)

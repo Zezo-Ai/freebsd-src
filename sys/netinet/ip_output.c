@@ -112,13 +112,19 @@ ip_output_pfil(struct mbuf **mp, struct ifnet *ifp, int flags,
 	struct mbuf *m;
 	struct in_addr odst;
 	struct ip *ip;
+	int ret;
 
 	m = *mp;
 	ip = mtod(m, struct ip *);
 
 	/* Run through list of hooks for output packets. */
 	odst.s_addr = ip->ip_dst.s_addr;
-	switch (pfil_mbuf_out(V_inet_pfil_head, mp, ifp, inp)) {
+	if (flags & IP_FORWARDING)
+		ret = pfil_mbuf_fwd(V_inet_pfil_head, mp, ifp, inp);
+	else
+		ret = pfil_mbuf_out(V_inet_pfil_head, mp, ifp, inp);
+
+	switch (ret) {
 	case PFIL_DROPPED:
 		*error = EACCES;
 		/* FALLTHROUGH */
@@ -323,7 +329,7 @@ ip_output(struct mbuf *m, struct mbuf *opt, struct route *ro, int flags,
 	const struct sockaddr *gw;
 	struct in_ifaddr *ia = NULL;
 	struct in_addr src;
-	int isbroadcast;
+	bool isbroadcast;
 	uint16_t ip_len, ip_off;
 	struct route iproute;
 	uint32_t fibnum;
@@ -428,7 +434,7 @@ again:
 		ifp = ia->ia_ifp;
 		mtu = ifp->if_mtu;
 		ip->ip_ttl = 1;
-		isbroadcast = 1;
+		isbroadcast = true;
 		src = IA_SIN(ia)->sin_addr;
 	} else if (flags & IP_ROUTETOIF) {
 		if ((ia = ifatoia(ifa_ifwithdstaddr(sintosa(dst),
@@ -454,7 +460,7 @@ again:
 		ifp = imo->imo_multicast_ifp;
 		mtu = ifp->if_mtu;
 		IFP_TO_IA(ifp, ia);
-		isbroadcast = 0;	/* fool gcc */
+		isbroadcast = false;
 		/* Interface may have no addresses. */
 		if (ia != NULL)
 			src = IA_SIN(ia)->sin_addr;
@@ -499,7 +505,7 @@ again:
 		else if ((ifp->if_flags & IFF_BROADCAST) && (gw->sa_family == AF_INET))
 			isbroadcast = in_ifaddr_broadcast(((const struct sockaddr_in *)gw)->sin_addr, ia);
 		else
-			isbroadcast = 0;
+			isbroadcast = false;
 		mtu = nh->nh_mtu;
 		src = IA_SIN(ia)->sin_addr;
 	} else {
@@ -1088,10 +1094,22 @@ ip_ctloutput(struct socket *so, struct sockopt *sopt)
 		    sopt->sopt_dir == SOPT_SET) {
 			switch (sopt->sopt_name) {
 			case SO_SETFIB:
+				error = sooptcopyin(sopt, &optval,
+				    sizeof(optval), sizeof(optval));
+				if (error != 0)
+					break;
+
 				INP_WLOCK(inp);
-				inp->inp_inc.inc_fibnum = so->so_fibnum;
+				if ((inp->inp_flags & INP_BOUNDFIB) != 0 &&
+				    optval != so->so_fibnum) {
+					INP_WUNLOCK(inp);
+					error = EISCONN;
+					break;
+				}
+				error = sosetfib(inp->inp_socket, optval);
+				if (error == 0)
+					inp->inp_inc.inc_fibnum = optval;
 				INP_WUNLOCK(inp);
-				error = 0;
 				break;
 			case SO_MAX_PACING_RATE:
 #ifdef RATELIMIT

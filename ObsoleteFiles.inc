@@ -51,6 +51,13 @@
 #   xargs -n1 | sort | uniq -d;
 # done
 
+# 20250205: bus_generic_attach.9 removed after the function was deprecated
+OLD_FILES+=usr/share/man/man9/bus_generic_attach.9.gz
+
+# 20250204: sys/vm/stack test symbols moved to /usr/lib/debug
+OLD_FILES+=usr/tests/sys/vm/stack/.debug/libsoxstack.so.debug
+OLD_DIRS+=usr/tests/sys/vm/stack/.debug
+
 # 20250129: libdevinfo bumped to version 7
 OLD_LIBS+=lib/libdevinfo.so.6
 
@@ -573,6 +580,7 @@ OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.asan_cxx-powerpc64.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.asan_cxx-powerpc64le.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.asan_cxx-riscv64.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.asan_cxx-x86_64.a
+OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.asan_static-aarch64.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.asan_static-i386.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.asan_static-powerpc64.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.asan_static-powerpc64le.a
@@ -591,6 +599,7 @@ OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.dd-aarch64.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.dd-x86_64.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.fuzzer-aarch64.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.fuzzer-x86_64.a
+OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.fuzzer_interceptors-aarch64.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.fuzzer_interceptors-x86_64.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.fuzzer_no_main-aarch64.a
 OLD_FILES+=usr/lib/clang/18/lib/freebsd/libclang_rt.fuzzer_no_main-x86_64.a

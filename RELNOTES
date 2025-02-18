@@ -10,6 +10,19 @@ newline.  Entries should be separated by a newline.
 
 Changes to this file should not be MFCed.
 
+7e7f88001d7d:
+	The definition of pf's struct pfr_tstats and struct pfr_astats has
+	changed, breaking ABI compatibility for 32-bit powerpc (including
+	powerpcspe) and armv7. Users of these platforms should ensure kernel
+	and userspace are updated together.
+
+5dc99e9bb985, 08e638c089a, 4009a98fe80:
+	The net.inet.{tcp,udp,raw}.bind_all_fibs tunables have been added.
+	They modify socket behavior such that packets not originating from the
+	same FIB as the socket are ignored.  TCP and UDP sockets belonging to
+	different FIBs may also be bound to the same address.  The default
+	behavior is unmodified.
+
 f87bb5967670, e51036fbf3f8:
 	Support for vinum volumes has been removed.
 
@@ -17,6 +30,11 @@ f87bb5967670, e51036fbf3f8:
 	The layout of NFS file handles for the tarfs, tmpfs, cd9660, and ext2fs
 	file systems has changed.  An NFS server that exports any of these file
 	systems will need its clients to unmount and remount the exports.
+
+1111a44301da:
+	Defer the January 19, 2038 date limit in UFS1 filesystems to
+	February 7, 2106. This affects only UFS1 format filesystems.
+	See the commit message for details.
 
 07cd69e272da:
 	Add a new -a command line option to mountd(8).

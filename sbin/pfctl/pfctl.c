@@ -1064,6 +1064,15 @@ pfctl_print_rule_counters(struct pfctl_rule *rule, int opts)
 			    rule->packets[1]),
 			    (unsigned long long)(rule->bytes[0] +
 			    rule->bytes[1]), (uintmax_t)rule->states_cur);
+		printf("  [ Source Nodes: %-6ju "
+			    "Limit: %-6ju "
+			    "NAT/RDR: %-6ju "
+			    "Route: %-6ju "
+			    "]\n",
+			    (uintmax_t)rule->src_nodes,
+			    (uintmax_t)rule->src_nodes_type[PF_SN_LIMIT],
+			    (uintmax_t)rule->src_nodes_type[PF_SN_NAT],
+			    (uintmax_t)rule->src_nodes_type[PF_SN_ROUTE]);
 		if (!(opts & PF_OPT_DEBUG))
 			printf("  [ Inserted: uid %u pid %u "
 			    "State Creations: %-6ju]\n",
@@ -2463,7 +2472,7 @@ pfctl_load_limit(struct pfctl *pf, unsigned int index, unsigned int limit)
 		if (errno == EBUSY)
 			warnx("Current pool size exceeds requested hard limit");
 		else
-			warnx("DIOCSETLIMIT");
+			warnx("cannot set '%s' limit", pf_limits[index].name);
 		return (1);
 	}
 	return (0);
@@ -3295,7 +3304,7 @@ main(int argc, char *argv[])
 		if (pfctl_get_skip_ifaces())
 			error = 1;
 
-	if (rulesopt != NULL && !(opts & (PF_OPT_MERGE|PF_OPT_NOACTION)) &&
+	if (rulesopt != NULL && !(opts & PF_OPT_MERGE) &&
 	    !anchorname[0] && (loadopt & PFCTL_FLAG_OPTION))
 		if (pfctl_file_fingerprints(dev, opts, PF_OSFP_FILE))
 			error = 1;
